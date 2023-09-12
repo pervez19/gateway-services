@@ -79,5 +79,5 @@ security measures and providing a seamless user experience.
 
 **Version History:**
 
--   1.0 (Current Version): Initial release with routing, load balancing,
+-   1.0 (Current Version): Initial release with routing, error handling,
     security, and caching capabilities.
