@@ -47,7 +47,13 @@ import static org.mockito.Mockito.when;
         "spring.data.redis.port=6379",
         "spring.cloud.loadbalancer.cache.enabled=false",
         "spring.cloud.gateway.httpclient.connect-timeout=1000",
-        "applications.jwtConfig.prefix=Bearer"
+        "applications.jwtConfig.prefix=Bearer",
+        // same CORS settings as config-server's gateway-services.yml
+        "spring.cloud.gateway.globalcors.cors-configurations.[/**].allowed-origin-patterns=http://localhost:[*],http://127.0.0.1:[*]",
+        "spring.cloud.gateway.globalcors.cors-configurations.[/**].allowed-methods=GET,POST,PUT,PATCH,DELETE,OPTIONS",
+        "spring.cloud.gateway.globalcors.cors-configurations.[/**].allowed-headers=*",
+        "spring.cloud.gateway.globalcors.cors-configurations.[/**].allow-credentials=true",
+        "spring.cloud.gateway.globalcors.cors-configurations.[/**].max-age=3600"
 })
 class GatewayServicesApplicationTests {
 
@@ -124,6 +130,37 @@ class GatewayServicesApplicationTests {
         client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
                 .exchange().expectStatus().isUnauthorized();
         assertThat(hits).isEmpty();
+    }
+
+    @Test
+    void browserPreflightForSignupIsAllowed() {
+        client.options().uri("/api/v1/auth/signup")
+                .header("Origin", "http://localhost:3000")
+                .header("Access-Control-Request-Method", "POST")
+                .header("Access-Control-Request-Headers", "gatewaykey,content-type,authorization")
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().valueEquals("Access-Control-Allow-Origin", "http://localhost:3000");
+        assertThat(hits).isEmpty(); // answered by the gateway, never proxied
+    }
+
+    @Test
+    void crossOriginCallGetsExactlyOneAllowOriginHeader() {
+        client.get().uri("/api/v1/auth/signin").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .header("Origin", "http://localhost:3000")
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().values("Access-Control-Allow-Origin",
+                        v -> assertThat(v).containsExactly("http://localhost:3000"));
+    }
+
+    @Test
+    void unknownOriginIsRefused() {
+        client.options().uri("/api/v1/auth/signup")
+                .header("Origin", "http://evil.example")
+                .header("Access-Control-Request-Method", "POST")
+                .exchange()
+                .expectStatus().isForbidden();
     }
 
     @Test
@@ -252,6 +289,9 @@ class GatewayServicesApplicationTests {
             s.createContext("/", ex -> {
                 hits.computeIfAbsent(name, k -> new AtomicInteger()).incrementAndGet();
                 lastUsernameHeader.put("value", Optional.ofNullable(ex.getRequestHeaders().getFirst("username")).orElse("<none>"));
+                if (ex.getRequestHeaders().containsKey("Origin")) { // like authentication-services' own CorsConfig
+                    ex.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                }
                 byte[] body = name.getBytes(StandardCharsets.UTF_8);
                 ex.sendResponseHeaders(200, body.length);
                 ex.getResponseBody().write(body);
