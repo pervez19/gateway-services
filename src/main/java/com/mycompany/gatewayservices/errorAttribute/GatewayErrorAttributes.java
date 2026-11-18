@@ -38,6 +38,9 @@ public class GatewayErrorAttributes extends DefaultErrorAttributes {
             ResponseStatusException responseStatusException = (ResponseStatusException) error;
             return  HttpStatus.valueOf(responseStatusException.getStatusCode().value());
         }
+        if (error instanceof java.net.ConnectException) {
+            return HttpStatus.SERVICE_UNAVAILABLE; // instance went down before Eureka evicted it
+        }
         return responseStatusAnnotation.getValue("code", HttpStatus.class).orElse(HttpStatus.INTERNAL_SERVER_ERROR);
     }
 }

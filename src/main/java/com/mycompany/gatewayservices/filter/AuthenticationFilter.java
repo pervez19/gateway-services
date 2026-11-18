@@ -33,7 +33,10 @@ public class AuthenticationFilter implements GatewayFilter {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
 
-        ServerHttpRequest request = exchange.getRequest();
+        // Identity headers are set only by the gateway; drop any a client sent.
+        ServerHttpRequest request = exchange.getRequest().mutate()
+                .headers(h -> { h.remove("username"); h.remove("authorities"); })
+                .build();
         if (routerValidator.isSecured.test(request)) {
 
             if (this.isAuthMissing(request)) {
@@ -43,14 +46,15 @@ public class AuthenticationFilter implements GatewayFilter {
 
             Optional<String> token = resolveHeaderToken(request);
 
-            if (!token.isPresent() || !jwtTokenService.validateToken(token.get()) || jwtTokenService.isTokenExpired(token.get())) {
+            if (token.isEmpty() || !jwtTokenService.validateToken(token.get()) || jwtTokenService
+                    .isTokenExpired(token.get())) {
                 log.error("Authorization header is invalid.");
                 throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authorization header is invalid.");
 
             }
-            this.populateRequestWithHeaders(exchange, token.get());
+            request = this.populateRequestWithHeaders(request, token.get());
         }
-        return chain.filter(exchange);
+        return chain.filter(exchange.mutate().request(request).build());
     }
 
     private boolean isAuthMissing(ServerHttpRequest request) {
@@ -66,9 +70,9 @@ public class AuthenticationFilter implements GatewayFilter {
         return authorizationHeader != null && authorizationHeader.startsWith(prefix + " ") ?
                 Optional.of(authorizationHeader.substring((prefix + " ").length())) : Optional.empty();
     }
-    private void populateRequestWithHeaders(ServerWebExchange exchange, String token) {
+    private ServerHttpRequest populateRequestWithHeaders(ServerHttpRequest request, String token) {
         Claims claims = jwtTokenService.extractAllClaimsFromToken(token);
-        exchange.getRequest().mutate()
+        return request.mutate()
                 .header("username", claims.getSubject())
                 .header("authorities", String.valueOf(claims.get("authorities")))
                 .build();

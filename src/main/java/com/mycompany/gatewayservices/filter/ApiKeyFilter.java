@@ -43,7 +43,8 @@ public class ApiKeyFilter implements GlobalFilter, Ordered {
 
     @Override
     public int getOrder() {
-        return Ordered.LOWEST_PRECEDENCE;
+        // Must run before load balancing/routing; LOWEST_PRECEDENCE tied with NettyRoutingFilter (the proxy call).
+        return Ordered.HIGHEST_PRECEDENCE;
     }
 
     private boolean isAuthorized(String routeId, String apikey) {
