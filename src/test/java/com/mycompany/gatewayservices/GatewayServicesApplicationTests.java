@@ -62,7 +62,7 @@ class GatewayServicesApplicationTests {
     static final String API_KEY = "343C-ED0B-4137-B27E";
 
     static final Map<String, AtomicInteger> hits = new ConcurrentHashMap<>();
-    static final Map<String, String> lastUsernameHeader = new ConcurrentHashMap<>();
+    static final Map<String, String> lastEmailHeader = new ConcurrentHashMap<>();
     static final HttpServer auth1 = backend("auth-1");
     static final HttpServer auth2 = backend("auth-2");
     static final int deadPort = freePort();
@@ -92,7 +92,7 @@ class GatewayServicesApplicationTests {
     @BeforeEach
     void setUp() {
         hits.clear();
-        lastUsernameHeader.clear();
+        lastEmailHeader.clear();
         when(redis.hashValues(any())).thenReturn(List.of());
         when(stringRedis.opsForValue()).thenReturn(revocations);
         when(revocations.multiGet(anyList())).thenReturn(Arrays.asList(null, null));
@@ -120,9 +120,9 @@ class GatewayServicesApplicationTests {
     @Test
     void securedRouteForwardsIdentityFromJwt() {
         client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice"))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice@example.com"))
                 .exchange().expectStatus().isOk();
-        assertThat(lastUsernameHeader.get("value")).isEqualTo("alice");
+        assertThat(lastEmailHeader.get("value")).isEqualTo("alice@example.com");
     }
 
     @Test
@@ -209,16 +209,16 @@ class GatewayServicesApplicationTests {
     @Test
     void permissionsEndpointIsRoutedToAuthService() {
         client.get().uri("/api/v1/permissions/1").header(AppConstant.GATEWAY_KEY, API_KEY)
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice"))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice@example.com"))
                 .exchange().expectStatus().isOk();
     }
 
     @Test
     void spoofedIdentityHeaderIsStripped() {
         client.get().uri("/api/v1/auth/signin").header(AppConstant.GATEWAY_KEY, API_KEY)
-                .header("username", "admin")
+                .header("email", "admin@example.com")
                 .exchange().expectStatus().isOk();
-        assertThat(lastUsernameHeader.get("value")).isEqualTo("<none>");
+        assertThat(lastEmailHeader.get("value")).isEqualTo("<none>");
     }
 
     @Test
@@ -233,7 +233,7 @@ class GatewayServicesApplicationTests {
         when(redis.hashGet(eq(AppConstant.RECORD_KEY), eq("FA48-EF0C-427E-8CCF")))
                 .thenReturn(Map.of("key", "FA48-EF0C-427E-8CCF", "services", List.of(AppConstant.PRODUCT_SERVICE_KEY)));
         client.get().uri("/api/v1/products").header(AppConstant.GATEWAY_KEY, "FA48-EF0C-427E-8CCF")
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice"))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice@example.com"))
                 .exchange().expectStatus().isEqualTo(503);
     }
 
@@ -241,7 +241,7 @@ class GatewayServicesApplicationTests {
     void loggedOutTokenIsRejected() {
         when(revocations.multiGet(anyList())).thenReturn(Arrays.asList("1", null));
         client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice"))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice@example.com"))
                 .exchange().expectStatus().isUnauthorized();
         assertThat(hits).isEmpty();
     }
@@ -251,7 +251,7 @@ class GatewayServicesApplicationTests {
         String revokedBefore = String.valueOf(System.currentTimeMillis() / 1000 + 1);
         when(revocations.multiGet(anyList())).thenReturn(Arrays.asList(null, revokedBefore));
         client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice"))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice@example.com"))
                 .exchange().expectStatus().isUnauthorized();
         assertThat(hits).isEmpty();
     }
@@ -288,7 +288,7 @@ class GatewayServicesApplicationTests {
             HttpServer s = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
             s.createContext("/", ex -> {
                 hits.computeIfAbsent(name, k -> new AtomicInteger()).incrementAndGet();
-                lastUsernameHeader.put("value", Optional.ofNullable(ex.getRequestHeaders().getFirst("username")).orElse("<none>"));
+                lastEmailHeader.put("value", Optional.ofNullable(ex.getRequestHeaders().getFirst("email")).orElse("<none>"));
                 if (ex.getRequestHeaders().containsKey("Origin")) { // like authentication-services' own CorsConfig
                     ex.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
                 }

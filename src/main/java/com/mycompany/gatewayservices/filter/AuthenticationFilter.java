@@ -37,7 +37,7 @@ public class AuthenticationFilter implements GatewayFilter {
 
         // Identity headers are set only by the gateway; drop any a client sent.
         ServerHttpRequest request = exchange.getRequest().mutate()
-                .headers(h -> { h.remove("username"); h.remove("authorities"); })
+                .headers(h -> { h.remove("email"); h.remove("username"); h.remove("authorities"); })
                 .build();
         if (routerValidator.isSecured.test(request)) {
 
@@ -79,7 +79,7 @@ public class AuthenticationFilter implements GatewayFilter {
     }
     private ServerHttpRequest populateRequestWithHeaders(ServerHttpRequest request, Claims claims) {
         return request.mutate()
-                .header("username", claims.getSubject())
+                .header("email", claims.getSubject()) // JWT subject is the user's email
                 .header("authorities", String.valueOf(claims.get("authorities")))
                 .build();
     }
