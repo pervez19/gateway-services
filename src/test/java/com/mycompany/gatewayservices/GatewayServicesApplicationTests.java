@@ -4,6 +4,8 @@ import com.mycompany.gatewayservices.configuration.RedisHashComponent;
 import com.mycompany.gatewayservices.constant.AppConstant;
 import com.sun.net.httpserver.HttpServer;
 import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.io.Encoders;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.AfterAll;
@@ -41,12 +43,12 @@ import static org.mockito.Mockito.when;
         "spring.data.redis.port=6379",
         "spring.cloud.loadbalancer.cache.enabled=false",
         "spring.cloud.gateway.httpclient.connect-timeout=1000",
-        "applications.jwtConfig.prefix=Bearer",
-        "applications.jwtConfig.secret=" + GatewayServicesApplicationTests.SECRET
+        "applications.jwtConfig.prefix=Bearer"
 })
 class GatewayServicesApplicationTests {
 
-    static final String SECRET = "cd+Pr1js+w2qfT2BoCD+tPcYp9LbjpmhSMEJqUob1mcxZ7+Wmik4AYdjX+DlDjmE4yporzQ9tm7v3z/j+QbdYg==";
+    // Throwaway key per test run; never put a real secret in tests.
+    static final String SECRET = Encoders.BASE64.encode(Keys.secretKeyFor(SignatureAlgorithm.HS512).getEncoded());
     static final String API_KEY = "343C-ED0B-4137-B27E";
 
     static final Map<String, AtomicInteger> hits = new ConcurrentHashMap<>();
@@ -61,6 +63,7 @@ class GatewayServicesApplicationTests {
         r.add(p + "authentication-services[0].uri", () -> "http://localhost:" + auth1.getAddress().getPort());
         r.add(p + "authentication-services[1].uri", () -> "http://localhost:" + auth2.getAddress().getPort());
         r.add(p + "authentication-services[2].uri", () -> "http://localhost:" + deadPort); // crashed instance
+        r.add("applications.jwtConfig.secret", () -> SECRET);
         r.add(p + "product-services[0].uri", () -> "http://localhost:" + deadPort);         // only instance is down
     }
 
