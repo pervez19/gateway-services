@@ -6,7 +6,6 @@ import com.sun.net.httpserver.HttpServer;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.io.Encoders;
-import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,6 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -22,6 +23,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.security.KeyPair;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,7 +31,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -47,8 +51,8 @@ import static org.mockito.Mockito.when;
 })
 class GatewayServicesApplicationTests {
 
-    // Throwaway key per test run; never put a real secret in tests.
-    static final String SECRET = Encoders.BASE64.encode(Keys.secretKeyFor(SignatureAlgorithm.HS512).getEncoded());
+    // Throwaway RSA key pair per test run; never put a real key in tests.
+    static final KeyPair KEYS = Keys.keyPairFor(SignatureAlgorithm.RS256);
     static final String API_KEY = "343C-ED0B-4137-B27E";
 
     static final Map<String, AtomicInteger> hits = new ConcurrentHashMap<>();
@@ -63,12 +67,18 @@ class GatewayServicesApplicationTests {
         r.add(p + "authentication-services[0].uri", () -> "http://localhost:" + auth1.getAddress().getPort());
         r.add(p + "authentication-services[1].uri", () -> "http://localhost:" + auth2.getAddress().getPort());
         r.add(p + "authentication-services[2].uri", () -> "http://localhost:" + deadPort); // crashed instance
-        r.add("applications.jwtConfig.secret", () -> SECRET);
+        r.add("applications.jwtConfig.publicKey", () -> Encoders.BASE64.encode(KEYS.getPublic().getEncoded()));
         r.add(p + "product-services[0].uri", () -> "http://localhost:" + deadPort);         // only instance is down
     }
 
     @MockBean
     RedisHashComponent redis;
+
+    @MockBean
+    StringRedisTemplate stringRedis;
+
+    @SuppressWarnings("unchecked")
+    final ValueOperations<String, String> revocations = mock(ValueOperations.class);
 
     @Autowired
     WebTestClient client;
@@ -78,6 +88,8 @@ class GatewayServicesApplicationTests {
         hits.clear();
         lastUsernameHeader.clear();
         when(redis.hashValues(any())).thenReturn(List.of());
+        when(stringRedis.opsForValue()).thenReturn(revocations);
+        when(revocations.multiGet(anyList())).thenReturn(Arrays.asList(null, null));
         when(redis.hashGet(eq(AppConstant.RECORD_KEY), eq(API_KEY)))
                 .thenReturn(Map.of("key", API_KEY, "services", List.of(AppConstant.AUTHENTICATION_SERVICE_KEY)));
     }
@@ -115,6 +127,56 @@ class GatewayServicesApplicationTests {
     }
 
     @Test
+    void refreshTokenEndpointIsReachableWithoutAccessToken() {
+        // Not 401 = no JWT required. (May be 503: round-robin can pick the fixture's dead instance and POST isn't retried.)
+        client.post().uri("/api/v1/auth/refresh-token").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .exchange().expectStatus().value(status -> assertThat(status).isIn(200, 503));
+    }
+
+    @Test
+    void logoutRequiresAccessToken() {
+        client.post().uri("/api/v1/auth/logout").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .exchange().expectStatus().isUnauthorized();
+        assertThat(hits).isEmpty();
+    }
+
+    @Test
+    void openPathEmbeddedInSecuredPathStillRequiresJwt() {
+        client.get().uri("/api/v1/users/api/v1/auth/signin").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .exchange().expectStatus().isUnauthorized();
+        assertThat(hits).isEmpty();
+    }
+
+    @Test
+    void tokenSignedWithOtherKeyIsRejected() {
+        String forged = Jwts.builder().setSubject("mallory")
+                .setExpiration(new Date(System.currentTimeMillis() + 60_000))
+                .signWith(Keys.secretKeyFor(SignatureAlgorithm.HS512)).compact();
+        client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + forged)
+                .exchange().expectStatus().isUnauthorized();
+        assertThat(hits).isEmpty();
+    }
+
+    @Test
+    void expiredTokenIsRejected() {
+        String expired = Jwts.builder().setSubject("alice")
+                .setExpiration(new Date(System.currentTimeMillis() - 60_000))
+                .signWith(KEYS.getPrivate(), SignatureAlgorithm.RS256).compact();
+        client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + expired)
+                .exchange().expectStatus().isUnauthorized();
+        assertThat(hits).isEmpty();
+    }
+
+    @Test
+    void permissionsEndpointIsRoutedToAuthService() {
+        client.get().uri("/api/v1/permissions/1").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice"))
+                .exchange().expectStatus().isOk();
+    }
+
+    @Test
     void spoofedIdentityHeaderIsStripped() {
         client.get().uri("/api/v1/auth/signin").header(AppConstant.GATEWAY_KEY, API_KEY)
                 .header("username", "admin")
@@ -138,10 +200,50 @@ class GatewayServicesApplicationTests {
                 .exchange().expectStatus().isEqualTo(503);
     }
 
-    private static String token(String user) {
-        return Jwts.builder().setSubject(user).claim("authorities", "USER")
+    @Test
+    void loggedOutTokenIsRejected() {
+        when(revocations.multiGet(anyList())).thenReturn(Arrays.asList("1", null));
+        client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice"))
+                .exchange().expectStatus().isUnauthorized();
+        assertThat(hits).isEmpty();
+    }
+
+    @Test
+    void tokenOfDeletedUserIsRejected() {
+        String revokedBefore = String.valueOf(System.currentTimeMillis() / 1000 + 1);
+        when(revocations.multiGet(anyList())).thenReturn(Arrays.asList(null, revokedBefore));
+        client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token("alice"))
+                .exchange().expectStatus().isUnauthorized();
+        assertThat(hits).isEmpty();
+    }
+
+    @Test
+    void oldSharedSecretTokenIsRejected() {
+        String hmac = Jwts.builder().setSubject("alice")
                 .setExpiration(new Date(System.currentTimeMillis() + 60_000))
-                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(SECRET))).compact();
+                .signWith(Keys.secretKeyFor(SignatureAlgorithm.HS512)).compact();
+        client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + hmac)
+                .exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void refreshTokenIsRejectedAsAccessToken() {
+        String refresh = Jwts.builder().setSubject("alice").claim("token_type", "refresh")
+                .setExpiration(new Date(System.currentTimeMillis() + 60_000))
+                .signWith(KEYS.getPrivate(), SignatureAlgorithm.RS256).compact();
+        client.get().uri("/api/v1/users/me").header(AppConstant.GATEWAY_KEY, API_KEY)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + refresh)
+                .exchange().expectStatus().isUnauthorized();
+    }
+
+    private static String token(String user) {
+        return Jwts.builder().setId(UUID.randomUUID().toString()).setSubject(user).claim("authorities", "USER")
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + 60_000))
+                .signWith(KEYS.getPrivate(), SignatureAlgorithm.RS256).compact();
     }
 
     private static HttpServer backend(String name) {

@@ -20,7 +20,7 @@ public class GatewayRouteConfiguration {
     public RouteLocator customRouteLocator(RouteLocatorBuilder builder) {
         return builder.routes()
                 .route(AppConstant.AUTHENTICATION_SERVICE_KEY,
-                        r -> r.path("/api/v1/roles/**", "/api/v1/auth/**", "/api/v1/users/**", "/api/v1/companies/**")
+                        r -> r.path("/api/v1/roles/**", "/api/v1/auth/**", "/api/v1/users/**", "/api/v1/companies/**", "/api/v1/permissions/**")
                                 .filters(f -> f.filter(filter).retry(2))
                                 .uri("lb://authentication-services"))
                 .route(AppConstant.PRODUCT_SERVICE_KEY,

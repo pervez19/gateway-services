@@ -1,6 +1,7 @@
 package com.mycompany.gatewayservices.filter;
 
 import com.mycompany.gatewayservices.configuration.JwtTokenService;
+import com.mycompany.gatewayservices.configuration.TokenRevocationService;
 import com.mycompany.gatewayservices.route.RouterValidator;
 import io.jsonwebtoken.Claims;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +27,7 @@ import java.util.Optional;
 public class AuthenticationFilter implements GatewayFilter {
     private final JwtTokenService jwtTokenService;
     private final RouterValidator routerValidator;
+    private final TokenRevocationService tokenRevocationService;
     @Value("${applications.jwtConfig.prefix}")
     private String prefix;
 
@@ -45,14 +47,19 @@ public class AuthenticationFilter implements GatewayFilter {
             }
 
             Optional<String> token = resolveHeaderToken(request);
-
-            if (token.isEmpty() || !jwtTokenService.validateToken(token.get()) || jwtTokenService
-                    .isTokenExpired(token.get())) {
+            if (token.isEmpty()) {
                 log.error("Authorization header is invalid.");
                 throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authorization header is invalid.");
-
             }
-            request = this.populateRequestWithHeaders(request, token.get());
+            Claims claims = jwtTokenService.parseAccessToken(token.get()); // one parse: signature + expiry
+            ServerHttpRequest authenticated = populateRequestWithHeaders(request, claims);
+            return tokenRevocationService.isRevoked(claims).flatMap(revoked -> {
+                if (revoked) {
+                    log.error("Token has been revoked.");
+                    return Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token has been revoked."));
+                }
+                return chain.filter(exchange.mutate().request(authenticated).build());
+            });
         }
         return chain.filter(exchange.mutate().request(request).build());
     }
@@ -70,8 +77,7 @@ public class AuthenticationFilter implements GatewayFilter {
         return authorizationHeader != null && authorizationHeader.startsWith(prefix + " ") ?
                 Optional.of(authorizationHeader.substring((prefix + " ").length())) : Optional.empty();
     }
-    private ServerHttpRequest populateRequestWithHeaders(ServerHttpRequest request, String token) {
-        Claims claims = jwtTokenService.extractAllClaimsFromToken(token);
+    private ServerHttpRequest populateRequestWithHeaders(ServerHttpRequest request, Claims claims) {
         return request.mutate()
                 .header("username", claims.getSubject())
                 .header("authorities", String.valueOf(claims.get("authorities")))
